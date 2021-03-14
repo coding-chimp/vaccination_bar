@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ChimeraCoder/anaconda"
+	"github.com/aws/aws-lambda-go/lambda"
 	_ "github.com/joho/godotenv/autoload"
 )
 
@@ -119,5 +120,5 @@ func SendTweet() {
 }
 
 func main() {
-	SendTweet()
+	lambda.Start(SendTweet)
 }
