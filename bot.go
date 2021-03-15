@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ChimeraCoder/anaconda"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -25,7 +26,7 @@ type APICred struct {
 }
 
 type Stats struct {
-	Day        string
+	Date       time.Time
 	FirstVacc  float64
 	FirstDiff  float64
 	SecondVacc float64
@@ -53,9 +54,13 @@ func ParseFloat(str string) float64 {
 }
 
 func BuildStats(data []string) Stats {
+	date, err := time.Parse("2006-01-02", data[0])
+	if err != nil {
+		panic(err)
+	}
 	firstVacc := ParseFloat(data[10])
 	secondVacc := ParseFloat(data[11])
-	stats := Stats{Day: data[0], FirstVacc: firstVacc, SecondVacc: secondVacc}
+	stats := Stats{Date: date, FirstVacc: firstVacc, SecondVacc: secondVacc}
 
 	return stats
 }
@@ -102,14 +107,14 @@ func SendTweet() {
 	stats := LoadStats()
 	api := anaconda.NewTwitterApiWithCredentials(env.ACCESSTOKEN, env.ACCESSSECRET, env.APIKEY, env.APISECRET)
 
-	rawTweet := "COVID-19 vaccinations in the Germany:\n\n" +
+	rawTweet := "COVID-19 vaccinations in Germany as of %s:\n\n" +
 		"Partially vaccinated:\n%s\n%.2f%% (+%.2f)\n\n" +
 		"Fully vaccinated:\n%s\n%.2f%% (+%.2f)"
 
 	firstBar := DrawProgress(stats.FirstVacc)
 	secondBar := DrawProgress(stats.SecondVacc)
 
-	tweet := fmt.Sprintf(rawTweet,
+	tweet := fmt.Sprintf(rawTweet, stats.Date.Format("02.01.2006"),
 		firstBar, stats.FirstVacc, stats.FirstDiff,
 		secondBar, stats.SecondVacc, stats.SecondDiff)
 
