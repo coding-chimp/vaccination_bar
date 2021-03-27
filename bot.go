@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"fmt"
 	"math"
@@ -13,10 +14,14 @@ import (
 
 	"github.com/ChimeraCoder/anaconda"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/go-redis/redis/v8"
 	_ "github.com/joho/godotenv/autoload"
 )
 
 const dataURL string = "https://impfdashboard.de/static/data/germany_vaccinations_timeseries_v2.tsv"
+const redisKey string = "lastProcessedDay"
+
+var ctx = context.Background()
 
 type APICred struct {
 	APIKEY       string
@@ -43,6 +48,23 @@ func LoadEnv() (env APICred) {
 	return env
 }
 
+func RedisClient() *redis.Client {
+	return redis.NewClient(&redis.Options{
+		Addr:     os.Getenv("REDIS_URL"),
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       0,
+	})
+}
+
+func ParseDate(str string) time.Time {
+	date, err := time.Parse("2006-01-02", str)
+	if err != nil {
+		panic(err)
+	}
+
+	return date
+}
+
 func ParseFloat(str string) float64 {
 	number, err := strconv.ParseFloat(str, 64)
 	number = math.Round(number*10000) / 100
@@ -53,11 +75,24 @@ func ParseFloat(str string) float64 {
 	return number
 }
 
-func BuildStats(data []string) Stats {
-	date, err := time.Parse("2006-01-02", data[0])
+func LoadLastProcessedDay(rdb *redis.Client) (exists bool, val string) {
+	val, err := rdb.Get(ctx, redisKey).Result()
+	if err != nil {
+		return false, ""
+	}
+
+	return true, val
+}
+
+func SetLastProcessedDay(rdb *redis.Client, stats Stats) {
+	err := rdb.Set(ctx, redisKey, stats.Date.Format("2006-01-02"), 0).Err()
 	if err != nil {
 		panic(err)
 	}
+}
+
+func BuildStats(data []string) Stats {
+	date := ParseDate(data[0])
 	firstVacc := ParseFloat(data[10])
 	secondVacc := ParseFloat(data[11])
 	stats := Stats{Date: date, FirstVacc: firstVacc, SecondVacc: secondVacc}
@@ -65,7 +100,7 @@ func BuildStats(data []string) Stats {
 	return stats
 }
 
-func LoadStats() Stats {
+func LoadData() [][]string {
 	resp, err := http.Get(dataURL)
 	if err != nil {
 		panic(err)
@@ -79,14 +114,57 @@ func LoadStats() Stats {
 		panic(err)
 	}
 
-	lastDayData := data[len(data)-1]
-	prevDayData := data[len(data)-2]
-	lastDay := BuildStats(lastDayData)
-	prevDay := BuildStats(prevDayData)
-	lastDay.FirstDiff = lastDay.FirstVacc - prevDay.FirstVacc
-	lastDay.SecondDiff = lastDay.SecondVacc - prevDay.SecondVacc
+	return data
+}
 
-	return lastDay
+func ParseStatsAt(data [][]string, pos int) Stats {
+	dayData := data[pos]
+	prevDayData := data[pos-1]
+	day := BuildStats(dayData)
+	prevDay := BuildStats(prevDayData)
+	day.FirstDiff = day.FirstVacc - prevDay.FirstVacc
+	day.SecondDiff = day.SecondVacc - prevDay.SecondVacc
+
+	return day
+}
+
+func LoadStatsUntil(until time.Time) []Stats {
+	data := LoadData()
+	days := []Stats{}
+	pos := len(data) - 1
+	var stats Stats
+
+	for {
+		stats = ParseStatsAt(data, pos)
+
+		if stats.Date == until {
+			break
+		}
+
+		days = append([]Stats{stats}, days...)
+		pos--
+	}
+
+	return days
+}
+
+func LoadMostRecentStats() []Stats {
+	data := LoadData()
+
+	lastDay := ParseStatsAt(data, len(data)-1)
+
+	return []Stats{lastDay}
+}
+
+func LoadUnprocessedDays(rdb *redis.Client) []Stats {
+	exists, lastDayStr := LoadLastProcessedDay(rdb)
+
+	if exists {
+		lastDay := ParseDate(lastDayStr)
+		return LoadStatsUntil(lastDay)
+	} else {
+		return LoadMostRecentStats()
+	}
 }
 
 func DrawProgress(percent float64) string {
@@ -102,11 +180,7 @@ func DrawProgress(percent float64) string {
 	return bar
 }
 
-func SendTweet() {
-	env := LoadEnv()
-	stats := LoadStats()
-	api := anaconda.NewTwitterApiWithCredentials(env.ACCESSTOKEN, env.ACCESSSECRET, env.APIKEY, env.APISECRET)
-
+func SendTweet(api *anaconda.TwitterApi, stats Stats) {
 	rawTweet := "COVID-19 vaccinations in Germany as of %s:\n\n" +
 		"Partially vaccinated:\n%s\n%.2f%% (+%.2f)\n\n" +
 		"Fully vaccinated:\n%s\n%.2f%% (+%.2f)"
@@ -124,6 +198,24 @@ func SendTweet() {
 	}
 }
 
+func ProcessDataAndSendTweets() {
+	env := LoadEnv()
+	rdb := RedisClient()
+	api := anaconda.NewTwitterApiWithCredentials(env.ACCESSTOKEN, env.ACCESSSECRET, env.APIKEY, env.APISECRET)
+
+	days := LoadUnprocessedDays(rdb)
+
+	if len(days) == 0 {
+		return
+	}
+
+	for _, day := range days {
+		SendTweet(api, day)
+	}
+
+	SetLastProcessedDay(rdb, days[len(days)-1])
+}
+
 func main() {
-	lambda.Start(SendTweet)
+	lambda.Start(ProcessDataAndSendTweets)
 }
