@@ -182,8 +182,8 @@ func DrawProgress(percent float64) string {
 
 func SendTweet(api *anaconda.TwitterApi, stats Stats) {
 	rawTweet := "COVID-19 vaccinations in Germany as of %s:\n\n" +
-		"Partially vaccinated:\n%s\n%.2f%% (+%.2f)\n\n" +
-		"Fully vaccinated:\n%s\n%.2f%% (+%.2f)"
+		"Partially vaccinated:\n%s\n%.1f%% (+%.1f)\n\n" +
+		"Fully vaccinated:\n%s\n%.1f%% (+%.1f)"
 
 	firstBar := DrawProgress(stats.FirstVacc)
 	secondBar := DrawProgress(stats.SecondVacc)
